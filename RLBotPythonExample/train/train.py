@@ -15,56 +15,29 @@ class PythonExample(BaseAgent):
         import torch
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # this is for separate process imports
         from model import SymmetricModel
+        self.Model = SymmetricModel
         self.torch = torch
         self.controller_state = SimpleControllerState()
         self.frame = 0  # frame counter for timed reset
         self.brain = 0  # bot counter for generation reset
-        self.pop = 15  # population for bot looping
-        self.num_best = 2
+        self.pop = 10  # population for bot looping
+        self.num_best = 5
         self.gen = 0
         self.pos = 0
         self.max_frames = 5000
-        self.bot_list = [SymmetricModel() for _ in range(self.pop)]  # list of Individual() objects
-        self.bot_list[-self.num_best:] = [SymmetricModel()] * self.num_best  # make sure last bots are the same
+        self.bot_list = [self.Model() for _ in range(self.pop)]  # list of Individual() objects
+        self.bot_list[-self.num_best:] = [self.Model()] * self.num_best  # make sure last bots are the same
         self.bot_fitness = [0] * self.pop
         self.fittest = None  # fittest object
-        self.mut_rate = 0.05  # mutation rate
+        self.mut_rate = 0.2  # mutation rate
         self.distance_to_ball = [math.inf] * self.max_frames  # set high for easy minimum
         self.input_formatter = LeviInputFormatter(team, index)
         self.output_formatter = LeviOutputFormatter(index)
 
+    def initialize_agent(self):
+        self.reset()  # reset at start
+
     def get_output(self, packet: GameTickPacket) -> SimpleControllerState:
-        # INIT LOOPS
-        if self.frame >= self.max_frames:
-            self.frame = 0
-            self.calc_fitness()
-            self.brain += 1  # change bot every reset
-
-        if self.frame == 0:
-            self.reset()  # reset at start
-
-        if self.brain >= self.pop:
-            self.gen += 1
-            self.brain = 0  # reset bots after all have gone
-
-            self.avg_best_fitness()
-            self.calc_fittest()
-
-            # PRINT GENERATION INFO
-            print("")
-            print("     GEN = "+str(self.gen))
-            print("-------------------------")
-            print("FITTEST = BOT " + str(self.fittest))
-            print("------FITNESS = " + str(self.bot_fitness[self.fittest]))
-            # print("------WEIGHTS = " + str(self.bot_list[self.fittest]))
-            for i in range(len(self.bot_list)):
-                print("FITNESS OF BOT " + str(i) + " = " + str(self.bot_fitness[i]))
-
-            # NE Functions
-
-            self.selection()
-            self.mutate()
-
         # NEURAL NET INPUTS
         inputs = self.input_formatter.create_input_array([packet])
         inputs = [self.torch.from_numpy(x).float() for x in inputs]
@@ -91,15 +64,47 @@ class PythonExample(BaseAgent):
         self.set_game_state(game_state)
 
         # NEURAL NET OUTPUTS
-        outputs = self.bot_list[self.brain].forward(*inputs)
+        with self.torch.no_grad():
+            outputs = self.bot_list[self.brain].forward(*inputs)
         self.controller_state = self.output_formatter.format_model_output(outputs, [packet])[0]
-
-        self.frame = self.frame + 1
 
         # KILL
         if (my_car.physics.location.z < 100 or my_car.physics.location.z > 1950 or my_car.physics.location.x < -4000 or my_car.physics.location.x > 4000 or my_car.physics.location.y > 5000) and self.frame > 50:
             #self.botList[self.brain].fitness = (1/self.frame+1)*100000
             self.frame = self.max_frames
+
+        # LOOPS
+        self.frame = self.frame + 1
+
+        if self.frame >= self.max_frames:
+            self.frame = 0
+            self.calc_fitness()
+            self.brain += 1  # change bot every reset
+            self.controller_state = SimpleControllerState()  # reset controller
+            self.reset()  # reset at start
+
+        if self.brain >= self.pop:
+            self.gen += 1
+            self.brain = 0  # reset bots after all have gone
+
+            self.avg_best_fitness()
+            self.calc_fittest()
+
+            # PRINT GENERATION INFO
+            print("")
+            print("     GEN = "+str(self.gen))
+            print("-------------------------")
+            print("FITTEST = BOT " + str(self.fittest))
+            print("------FITNESS = " + str(self.bot_fitness[self.fittest]))
+            # print("------WEIGHTS = " + str(self.bot_list[self.fittest]))
+            for i in range(len(self.bot_list)):
+                print("FITNESS OF BOT " + str(i) + " = " + str(self.bot_fitness[i]))
+
+            # NE Functions
+
+            self.selection()
+            self.mutate()
+            self.reset()  # reset because of delay
 
         return self.controller_state
 
@@ -142,9 +147,11 @@ class PythonExample(BaseAgent):
 
     def mutate(self):
         # MUTATE FIRST GENOMES
-        for i in range(0, self.pop - self.num_best):
-            for param in self.bot_list[i].parameters():
-                param.data += self.torch.normal(mean=0.0, std=self.torch.full(param.data.size(), self.mut_rate))
+        for i, bot in enumerate(self.bot_list[:-self.num_best]):
+            new_genes = self.Model()
+            for param, param_new in zip(bot.parameters(), new_genes.parameters()):
+                mask = self.torch.rand(param.data.size()) < self.mut_rate / (i + 1)
+                param.data[mask] = param_new.data[mask]
 
 
 def draw_debug(renderer, car, ball, action_display):
